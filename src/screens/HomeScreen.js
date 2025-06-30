@@ -32,6 +32,7 @@ const STEP_LENGTH_METERS = 0.7;
 
 export default function StepTrackerScreen() {
   const [steps, setSteps] = useState(0);
+  const [startOfDaySteps, setStartOfDaySteps] = useState(0);
   const [dailyGoal, setDailyGoal] = useState(10000);
   const [history, setHistory] = useState([]);
   const [modalVisible, setModalVisible] = useState(false);
@@ -70,29 +71,33 @@ export default function StepTrackerScreen() {
   }, []);
 
   useEffect(() => {
-    const startPedometer = async () => {
+    const setupPedometer = async () => {
       const granted = await requestActivityPermission();
       if (!granted) return;
 
       const available = await Pedometer.isAvailableAsync();
       if (!available) return;
 
-      const interval = setInterval(async () => {
-        const now = new Date();
-        try {
-          const result = await Pedometer.getStepCountAsync(startOfDayRef.current, now);
-          setSteps(result.steps);
-          saveSteps(result.steps);
-        } catch (err) {
-          console.warn('Step count error:', err);
-        }
-      }, 3000);
+      const now = new Date();
+      try {
+        const result = await Pedometer.getStepCountAsync(startOfDayRef.current, now);
+        setStartOfDaySteps(result.steps);
+      } catch (err) {
+        console.warn('Initial step fetch failed:', err);
+      }
 
-      return () => clearInterval(interval);
+      const subscription = Pedometer.watchStepCount(result => {
+        const todaySteps = result.steps - startOfDaySteps;
+        const safeSteps = todaySteps > 0 ? todaySteps : 0;
+        setSteps(safeSteps);
+        saveSteps(safeSteps);
+      });
+
+      return () => subscription.remove();
     };
 
-    startPedometer();
-  }, []);
+    setupPedometer();
+  }, [startOfDaySteps]);
 
   async function saveSteps(currentSteps) {
     const todayKey = startOfDayRef.current.toISOString().split('T')[0];
