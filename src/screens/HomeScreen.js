@@ -1,19 +1,21 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { 
-  View, 
-  Text, 
-  TouchableOpacity, 
-  StyleSheet, 
-  SafeAreaView, 
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  SafeAreaView,
   StatusBar,
   Dimensions,
   TextInput,
   Alert,
   KeyboardAvoidingView,
   Platform,
+  PermissionsAndroid,
   FlatList,
   Modal,
 } from 'react-native';
+
 import { Pedometer } from 'expo-sensors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Svg, { Circle } from 'react-native-svg';
@@ -22,15 +24,13 @@ const STORAGE_KEY = 'step_history';
 const GOAL_KEY = 'daily_goal';
 
 const screenWidth = Dimensions.get('window').width;
-const size = screenWidth * 0.6;  
+const size = screenWidth * 0.6;
 const strokeWidth = 15;
 const radius = (size - strokeWidth) / 2;
 const circumference = 2 * Math.PI * radius;
+const STEP_LENGTH_METERS = 0.7;
 
-const STEP_LENGTH_METERS = 0.7; // average step length in meters
-
-export default function StepTrackerScreen({ navigation }) {
-  const [isAvailable, setIsAvailable] = useState('checking...');
+export default function StepTrackerScreen() {
   const [steps, setSteps] = useState(0);
   const [dailyGoal, setDailyGoal] = useState(10000);
   const [history, setHistory] = useState([]);
@@ -69,6 +69,31 @@ export default function StepTrackerScreen({ navigation }) {
     loadData();
   }, []);
 
+  useEffect(() => {
+    const startPedometer = async () => {
+      const granted = await requestActivityPermission();
+      if (!granted) return;
+
+      const available = await Pedometer.isAvailableAsync();
+      if (!available) return;
+
+      const interval = setInterval(async () => {
+        const now = new Date();
+        try {
+          const result = await Pedometer.getStepCountAsync(startOfDayRef.current, now);
+          setSteps(result.steps);
+          saveSteps(result.steps);
+        } catch (err) {
+          console.warn('Step count error:', err);
+        }
+      }, 3000);
+
+      return () => clearInterval(interval);
+    };
+
+    startPedometer();
+  }, []);
+
   async function saveSteps(currentSteps) {
     const todayKey = startOfDayRef.current.toISOString().split('T')[0];
     try {
@@ -97,32 +122,10 @@ export default function StepTrackerScreen({ navigation }) {
     }
   }
 
-  useEffect(() => {
-    Pedometer.isAvailableAsync().then(
-      result => setIsAvailable(result ? 'Yes' : 'No'),
-      error => setIsAvailable('Error: ' + error)
-    );
-
-    const subscription = Pedometer.watchStepCount(result => {
-      const currentStartOfDay = getStartOfDay();
-
-      if (currentStartOfDay > startOfDayRef.current) {
-        startOfDayRef.current = currentStartOfDay;
-        setSteps(result.steps);
-        saveSteps(result.steps);
-      } else {
-        setSteps(result.steps);
-        saveSteps(result.steps);
-      }
-    });
-
-    return () => subscription.remove();
-  }, []);
-
   const onGoalSubmit = () => {
     const num = parseInt(goalInput, 10);
     if (isNaN(num) || num <= 0) {
-      Alert.alert('Invalid input', 'Please enter a positive number for your daily goal.');
+      Alert.alert('Invalid input', 'Please enter a positive number.');
       setGoalInput('');
       return;
     }
@@ -134,8 +137,7 @@ export default function StepTrackerScreen({ navigation }) {
 
   const progress = Math.min(steps / dailyGoal, 1);
   const strokeDashoffset = circumference * (1 - progress);
-  const distanceMeters = steps * STEP_LENGTH_METERS;
-  const distanceKm = (distanceMeters / 1000).toFixed(2);
+  const distanceKm = ((steps * STEP_LENGTH_METERS) / 1000).toFixed(2);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -147,16 +149,9 @@ export default function StepTrackerScreen({ navigation }) {
         <Text style={styles.title}>🏃 Step Tracker</Text>
 
         <View style={styles.card}>
-          <View style={{ marginTop: 30, alignItems: 'center', justifyContent: 'center' }}>
+          <View style={{ marginTop: 30, alignItems: 'center' }}>
             <Svg width={size} height={size}>
-              <Circle
-                stroke="#333"
-                fill="none"
-                cx={size / 2}
-                cy={size / 2}
-                r={radius}
-                strokeWidth={strokeWidth}
-              />
+              <Circle stroke="#333" fill="none" cx={size / 2} cy={size / 2} r={radius} strokeWidth={strokeWidth} />
               <Circle
                 stroke="#4CAF50"
                 fill="none"
@@ -176,17 +171,17 @@ export default function StepTrackerScreen({ navigation }) {
               <Text style={styles.goal}> / {dailyGoal} steps</Text>
               <Text style={styles.distance}>{distanceKm} km</Text>
             </View>
+            {steps >= dailyGoal && (
+              <Text style={{ color: '#81C784', marginTop: 10, fontStyle: 'italic' }}>
+                "Great job! Keep pushing your limits!"
+              </Text>
+            )}
           </View>
 
-          <TouchableOpacity
-            style={styles.setGoalButton}
-            onPress={() => setModalVisible(true)}
-            activeOpacity={0.8}
-          >
+          <TouchableOpacity style={styles.setGoalButton} onPress={() => setModalVisible(true)}>
             <Text style={styles.setGoalButtonText}>Set Daily Goal</Text>
           </TouchableOpacity>
 
-          {/* History Section */}
           <Text style={[styles.title, { marginTop: 40, fontSize: 20 }]}>📅 Step History</Text>
           {history.length === 0 ? (
             <Text style={styles.emptyText}>No history available yet.</Text>
@@ -205,7 +200,6 @@ export default function StepTrackerScreen({ navigation }) {
           )}
         </View>
 
-        {/* Modal for setting daily goal */}
         <Modal
           visible={modalVisible}
           animationType="slide"
@@ -247,6 +241,26 @@ export default function StepTrackerScreen({ navigation }) {
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
+}
+
+async function requestActivityPermission() {
+  if (Platform.OS === 'android' && Platform.Version >= 29) {
+    try {
+      const result = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION,
+        {
+          title: 'Physical Activity Permission',
+          message: 'This app needs access to your physical activity to track steps.',
+          buttonPositive: 'OK',
+        }
+      );
+      return result === PermissionsAndroid.RESULTS.GRANTED;
+    } catch (err) {
+      console.warn('Permission error:', err);
+      return false;
+    }
+  }
+  return true;
 }
 
 const styles = StyleSheet.create({

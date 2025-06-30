@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "step-tracker",
+    "name": "Step Tracker",
     "slug": "step-tracker",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -13,7 +13,10 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMotionUsageDescription": "This app uses your motion data to count steps."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -21,7 +24,10 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.younessz.steptracker"
+      "package": "com.younessz.steptracker",
+      "permissions": [
+        "ACTIVITY_RECOGNITION"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
