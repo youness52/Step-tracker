@@ -32,7 +32,6 @@ const STEP_LENGTH_METERS = 0.7;
 
 export default function StepTrackerScreen() {
   const [steps, setSteps] = useState(0);
-  const [startOfDaySteps, setStartOfDaySteps] = useState(0);
   const [dailyGoal, setDailyGoal] = useState(10000);
   const [history, setHistory] = useState([]);
   const [modalVisible, setModalVisible] = useState(false);
@@ -46,7 +45,10 @@ export default function StepTrackerScreen() {
 
   useEffect(() => {
     async function loadData() {
+      const now = new Date();
+      startOfDayRef.current = getStartOfDay();
       const todayKey = startOfDayRef.current.toISOString().split('T')[0];
+
       try {
         const savedHistory = await AsyncStorage.getItem(STORAGE_KEY);
         if (savedHistory) {
@@ -67,10 +69,13 @@ export default function StepTrackerScreen() {
         console.error('Failed to load data:', e);
       }
     }
+
     loadData();
   }, []);
 
   useEffect(() => {
+    let subscription;
+
     const setupPedometer = async () => {
       const granted = await requestActivityPermission();
       if (!granted) return;
@@ -79,25 +84,72 @@ export default function StepTrackerScreen() {
       if (!available) return;
 
       const now = new Date();
+      const startOfDay = getStartOfDay();
+      startOfDayRef.current = startOfDay;
+
       try {
-        const result = await Pedometer.getStepCountAsync(startOfDayRef.current, now);
-        setStartOfDaySteps(result.steps);
+        const result = await Pedometer.getStepCountAsync(startOfDay, now);
+        setSteps(result.steps);
+        saveSteps(result.steps);
       } catch (err) {
         console.warn('Initial step fetch failed:', err);
       }
 
-      const subscription = Pedometer.watchStepCount(result => {
-        const todaySteps = result.steps - startOfDaySteps;
-        const safeSteps = todaySteps > 0 ? todaySteps : 0;
-        setSteps(safeSteps);
-        saveSteps(safeSteps);
+      subscription = Pedometer.watchStepCount(result => {
+        setSteps(prev => {
+          const updated = prev + result.steps;
+          saveSteps(updated);
+          return updated;
+        });
       });
-
-      return () => subscription.remove();
     };
 
     setupPedometer();
-  }, [startOfDaySteps]);
+
+    return () => {
+      if (subscription) subscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = new Date();
+      if (now.getHours() === 0 && now.getMinutes() === 0 && now.getSeconds() < 10) {
+        resetStepsAtMidnight();
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [steps]);
+
+  const resetStepsAtMidnight = async () => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayKey = yesterday.toISOString().split('T')[0];
+
+    try {
+      const saved = await AsyncStorage.getItem(STORAGE_KEY);
+      let historyArray = saved ? JSON.parse(saved) : [];
+
+      const yesterdayIndex = historyArray.findIndex(entry => entry.date === yesterdayKey);
+      if (yesterdayIndex > -1) {
+        historyArray[yesterdayIndex].steps = steps;
+      } else {
+        historyArray.push({ date: yesterdayKey, steps });
+      }
+
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(historyArray));
+      setHistory(historyArray);
+
+      const result = await Pedometer.getStepCountAsync(today, now);
+      setSteps(result.steps);
+      saveSteps(result.steps);
+      startOfDayRef.current = today;
+    } catch (err) {
+      console.warn('Midnight reset/save failed:', err);
+    }
+  };
 
   async function saveSteps(currentSteps) {
     const todayKey = startOfDayRef.current.toISOString().split('T')[0];
@@ -147,10 +199,7 @@ export default function StepTrackerScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="light-content" backgroundColor="#121212" />
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <Text style={styles.title}>🏃 Step Tracker</Text>
 
         <View style={styles.card}>
@@ -205,12 +254,7 @@ export default function StepTrackerScreen() {
           )}
         </View>
 
-        <Modal
-          visible={modalVisible}
-          animationType="slide"
-          transparent
-          onRequestClose={() => setModalVisible(false)}
-        >
+        <Modal visible={modalVisible} animationType="slide" transparent onRequestClose={() => setModalVisible(false)}>
           <View style={styles.modalOverlay}>
             <View style={styles.modalContent}>
               <Text style={styles.modalTitle}>Set Daily Step Goal</Text>
@@ -227,16 +271,10 @@ export default function StepTrackerScreen() {
                 placeholderTextColor="#777"
               />
               <View style={styles.modalButtons}>
-                <TouchableOpacity
-                  style={[styles.modalButton, { backgroundColor: '#4CAF50' }]}
-                  onPress={onGoalSubmit}
-                >
+                <TouchableOpacity style={[styles.modalButton, { backgroundColor: '#4CAF50' }]} onPress={onGoalSubmit}>
                   <Text style={styles.modalButtonText}>Save</Text>
                 </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.modalButton, { backgroundColor: '#888' }]}
-                  onPress={() => setModalVisible(false)}
-                >
+                <TouchableOpacity style={[styles.modalButton, { backgroundColor: '#888' }]} onPress={() => setModalVisible(false)}>
                   <Text style={styles.modalButtonText}>Cancel</Text>
                 </TouchableOpacity>
               </View>
@@ -269,22 +307,9 @@ async function requestActivityPermission() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#121212',
-  },
-  container: {
-    flex: 1,
-    padding: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#eee',
-    marginBottom: 40,
-  },
+  safeArea: { flex: 1, backgroundColor: '#121212' },
+  container: { flex: 1, padding: 20, alignItems: 'center', justifyContent: 'center' },
+  title: { fontSize: 28, fontWeight: '700', color: '#eee', marginBottom: 40 },
   card: {
     width: '100%',
     backgroundColor: '#1e1e1e',
@@ -304,22 +329,9 @@ const styles = StyleSheet.create({
     width: size,
     height: size,
   },
-  steps: {
-    fontSize: 48,
-    fontWeight: '900',
-    color: '#4CAF50',
-  },
-  goal: {
-    fontSize: 18,
-    color: '#4CAF50',
-    fontWeight: '600',
-  },
-  distance: {
-    fontSize: 20,
-    color: '#81C784',
-    fontWeight: '600',
-    marginTop: 6,
-  },
+  steps: { fontSize: 48, fontWeight: '900', color: '#4CAF50' },
+  goal: { fontSize: 18, color: '#4CAF50', fontWeight: '600' },
+  distance: { fontSize: 20, color: '#81C784', fontWeight: '600', marginTop: 6 },
   setGoalButton: {
     marginTop: 30,
     backgroundColor: '#4CAF50',
@@ -331,11 +343,7 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 6,
   },
-  setGoalButtonText: {
-    color: '#121212',
-    fontWeight: '700',
-    fontSize: 16,
-  },
+  setGoalButtonText: { color: '#121212', fontWeight: '700', fontSize: 16 },
   historyItem: {
     backgroundColor: '#2c2c2c',
     padding: 14,
@@ -344,22 +352,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
-  historyDate: {
-    fontSize: 16,
-    color: '#eee',
-  },
-  historySteps: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#4CAF50',
-  },
-  emptyText: {
-    fontSize: 16,
-    color: '#777',
-    marginTop: 10,
-    fontStyle: 'italic',
-    textAlign: 'center',
-  },
+  historyDate: { fontSize: 16, color: '#eee' },
+  historySteps: { fontSize: 16, fontWeight: '700', color: '#4CAF50' },
+  emptyText: { fontSize: 16, color: '#777', marginTop: 10, fontStyle: 'italic', textAlign: 'center' },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(18, 18, 18, 0.8)',
@@ -374,12 +369,7 @@ const styles = StyleSheet.create({
     padding: 30,
     alignItems: 'center',
   },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#eee',
-    marginBottom: 20,
-  },
+  modalTitle: { fontSize: 20, fontWeight: '700', color: '#eee', marginBottom: 20 },
   goalInput: {
     backgroundColor: '#333',
     width: '60%',
@@ -391,19 +381,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 30,
   },
-  modalButtons: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    width: '100%',
-  },
-  modalButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 30,
-    borderRadius: 12,
-  },
-  modalButtonText: {
-    color: '#eee',
-    fontWeight: '700',
-    fontSize: 16,
-  },
+  modalButtons: { flexDirection: 'row', justifyContent: 'space-around', width: '100%' },
+  modalButton: { paddingVertical: 12, paddingHorizontal: 30, borderRadius: 12 },
+  modalButtonText: { color: '#eee', fontWeight: '700', fontSize: 16 },
 });
